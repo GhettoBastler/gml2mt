@@ -1,0 +1,223 @@
+#!/usr/bin/env python
+
+
+from serial import (
+    Serial, SEVENBITS,
+    PARITY_EVEN,
+)
+import xml.etree.ElementTree as ET
+import argparse
+
+
+# Screen dimensions
+MT_WIDTH = 80  # 40 * 2 pixels wide blocks
+MT_HEIGHT = 72  # 24 * 3 pixels high blocks
+
+
+def clear_screen():
+    """
+    Returns the bytes to send to the Minitel for filling the screen with
+    background color"""
+
+    res = b''
+
+    # Move cursor to 1,1
+    res += b'\x1f'
+    res += bytes((65,))
+    res += bytes((65,))
+
+    for j in range(24):
+        for i in range(40):
+            # Draw an empty block
+            res += bytes((32,))
+
+    return res
+
+
+def get_points(gml_file):
+    """
+    Get a list of (x, y) coordinates from a gml file scaled to the
+    dimensions of a Minitel screen"""
+
+    res = []
+    tree = ET.parse(gml_file)
+    root = tree.getroot()
+
+    # Check orientation
+    up_x = root.find('.//environment/up/x')
+    if up_x:
+        sideways = int(up_x.text) > 0
+    else:
+        sideways = False
+
+    # Extracting (x, y) coordinates from strokes
+    strokes = root.findall('.//stroke')
+    for st in strokes:
+        for i, pt in enumerate(st.findall('pt')):
+            # Dirty : points in GML can have a timestamp, but it is optional.
+            # We suppose that points appear in the right order
+
+            if sideways:
+                x = float(pt.find('y').text)
+                y = 1-float(pt.find('x').text)
+            else:
+                x = float(pt.find('x').text)
+                y = float(pt.find('y').text)
+
+            if i == 0:
+                # Starting a new stroke, do not interpolate
+                res.append((x*MT_WIDTH, y*MT_HEIGHT))
+            else:
+                # Interpolate between last and current point
+                res += interpolate(res[-1], (x*MT_WIDTH, y*MT_HEIGHT), 20)
+
+    return res
+
+
+def interpolate(start, end, step=10):
+    """
+    Create evenly spaced position between start and end.
+    Returns a list of (x, y) coordinates"""
+
+    x_start, y_start = start
+    x_end, y_end = end
+    v = (x_end-x_start, y_end-y_start)
+
+    res = [start]
+    for t in range(step):
+        x = x_start + v[0]*t/step
+        y = y_start + v[1]*t/step
+        res.append((x, y))
+
+    return res
+
+
+def stroke_path(points, size=2):
+    """
+    Returns a list of "painted" pixels given a list of points"""
+
+    res = []
+
+    for pt_x, pt_y in points:
+        for i in range(size):
+            for j in range(size):
+                x = int(pt_x + i)
+                y = int(pt_y + j)
+
+                # Check that this pixel has not already been drawn
+                if (x, y) in res:
+                    break
+
+                res.append((x, y))
+
+    return res
+
+
+def pixel_to_block(coords):
+    """
+    Returns the row and column of the block corresponding to a particular
+    pixel on screen, as well as the index of the pixel inside this block"""
+
+    x, y = coords
+
+    # Check that this is within screen limits
+    if x > MT_WIDTH - 1 or y > MT_HEIGHT - 1:
+        return
+
+    # Converting pixel coordinates to block coordinates
+    b_x = 1 + x // 2
+    b_y = 1 + y // 3
+
+    # Converting from screen coordinates "in-block" coordinates
+    s_x = x % 2
+    s_y = y % 3
+
+    # Calculating pixel index
+    idx = s_x+s_y*2
+
+    return ((b_x, b_y), idx)
+
+
+def block_to_bytes(block, pos):
+    """
+    Returns the bytes to send to the Minitel for drawing a block at a given
+    position"""
+    res = b''
+
+    x, y = pos
+    # Move cursor to pos
+    res += b'\x1f'
+    res += bytes((64+int(y),))
+    res += bytes((64+int(x),))
+
+    n = 32
+    for i, v in enumerate([0, 1, 2, 3, 4, 6]):  # No 5 !
+        if block[i] > 0:
+            n += 2**v
+
+    # Switch to graphics mode
+    res += b'\x0e'
+    # Draw block
+    res += bytes((n,))
+
+    return res
+
+
+def get_parser():
+    """
+    Create parser for command line arguments"""
+
+    parser = argparse.ArgumentParser(description='Draw a tag on a Minitel')
+    parser.add_argument('serial_port', type=str, help='Serial port to use')
+    parser.add_argument('gml_file', type=str, help='GML file to draw')
+    return parser
+
+
+def main():
+    parser = get_parser()
+    args = parser.parse_args()
+    with open(args.gml_file) as f:
+        points = get_points(f)
+
+    # Interpolate and paint the lines
+    pixels = stroke_path(points)
+
+    # Convert the list of pixels to blocks
+    blocks = []
+    for p in pixels:
+        result = pixel_to_block(p)
+        if result:
+            blocks.append(result)
+
+    with Serial(args.serial_port, 4800, SEVENBITS, PARITY_EVEN) as ser:
+        # Set background color to black and foreground to white
+        ser.write(b'\x1b\x47\x1b\x50')
+        # Clear the screen
+        # ser.write(b'\x0c')
+        ser.write(clear_screen())
+
+        # We have to keep track of the blocks we already painted in order to
+        # handle overlapping lines
+        touched_blocks = {}
+
+        for pos, idx in blocks:
+            # Check if we already painted over this block
+            if pos not in touched_blocks:
+                touched_blocks[pos] = [0] * 6
+
+            old_block = touched_blocks[pos]
+
+            # Update the block in memory
+            new_block = old_block.copy()
+            new_block[idx] = 1
+
+            # Tell the Minitel to draw the block
+            data = block_to_bytes(new_block, pos)
+            ser.write(data)
+
+            # Update the history of touched blocks
+            touched_blocks[pos] = new_block
+
+
+if __name__ == '__main__':
+    main()
