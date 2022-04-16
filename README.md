@@ -14,9 +14,9 @@ https://user-images.githubusercontent.com/100698182/163582119-9fff3aa1-d630-42d3
 
 ## Installation
 
-Download gml2mt from this repository :
+Clone this repository :
 ```
-wget https://raw.githubusercontent.com/GhettoBastler/gml2mt/main/gml2mt
+git clone https://github.com/GhettoBastler/gml2mt.git
 ```
 
 You will also need a GML file to display. You can download one from [#000000book.com](https://000000book.com/data)
@@ -112,7 +112,7 @@ These are the basic workings of gml2mt. There is also some additional stuff (che
 
 ### Possible improvements
 
-- Use timestamps instead to order the strokes (right now we take each point in the order they appear in the file, but this might not be reliable)
+- Use timestamps to order the strokes (right now we take each point in the order they appear in the file, but this might not be reliable)
 - Add an option to keep the original aspect ratio (in this version the drawing is stretched to fill the screen)
 - Use the timestamps to emulate brush dynamics (maybe varying the width and/or speed of the stroke)
 - Add some effects (changing colors, dripping, transitions between tags...)
